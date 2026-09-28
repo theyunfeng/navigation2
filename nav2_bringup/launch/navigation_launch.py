@@ -29,6 +29,7 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory('nav2_bringup')
+    bt_navigator_dir = get_package_share_directory('nav2_bt_navigator')
 
     namespace = LaunchConfiguration('namespace')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -39,6 +40,9 @@ def generate_launch_description():
     container_name_full = (namespace, '/', container_name)
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
+    # 保留 stdout 与 /rosout；关闭 rcutils 的逐节点文件后端，避免重复落盘。
+    node_arguments = [
+        '--ros-args', '--log-level', log_level, '--disable-external-lib-logs']
 
     lifecycle_nodes = ['controller_server',
                        'smoother_server',
@@ -46,7 +50,8 @@ def generate_launch_description():
                        'behavior_server',
                        'bt_navigator',
                        'waypoint_follower',
-                       'velocity_smoother']
+                       'velocity_smoother',
+                       'route_server']
 
     # Map fully qualified names to relative ones so the node's namespace can be prepended.
     # In case of the transforms (tf), currently, there doesn't seem to be a better alternative
@@ -60,7 +65,9 @@ def generate_launch_description():
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {
         'use_sim_time': use_sim_time,
-        'autostart': autostart}
+        'autostart': autostart,
+        'default_nav_to_pose_bt_xml': os.path.join(bt_navigator_dir, 'behavior_trees', 'minimal_to_pose.xml')
+    }
 
     configured_params = ParameterFile(
         RewrittenYaml(
@@ -112,13 +119,24 @@ def generate_launch_description():
         condition=IfCondition(PythonExpression(['not ', use_composition])),
         actions=[
             Node(
+                package='nav2_route',
+                executable='route_server',
+                name='route_server',
+                output='screen',
+                respawn=use_respawn,
+                respawn_delay=2.0,
+                parameters=[configured_params,{'graph_filepath': os.path.join(get_package_share_directory('nav2_route'), 'graphs', 'turtlebot3_graph.geojson')}],
+                arguments=node_arguments,
+                remappings=remappings
+            ),
+            Node(
                 package='nav2_controller',
                 executable='controller_server',
                 output='screen',
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
             Node(
                 package='nav2_smoother',
@@ -128,7 +146,7 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings),
             Node(
                 package='nav2_planner',
@@ -138,7 +156,7 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings),
             Node(
                 package='nav2_behaviors',
@@ -148,8 +166,9 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings),
+                arguments=node_arguments,
+                # 恢复行为也必须经过 multi_mode_navigation 的统一速度仲裁。
+                remappings=remappings + [('cmd_vel', 'cmd_vel_nav2')]),
             Node(
                 package='nav2_bt_navigator',
                 executable='bt_navigator',
@@ -158,7 +177,7 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings),
             Node(
                 package='nav2_waypoint_follower',
@@ -168,7 +187,7 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings),
             Node(
                 package='nav2_velocity_smoother',
@@ -178,15 +197,16 @@ def generate_launch_description():
                 respawn=use_respawn,
                 respawn_delay=2.0,
                 parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 remappings=remappings +
-                        [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]),
+                        [('cmd_vel', 'cmd_vel_nav'),
+                         ('cmd_vel_smoothed', 'cmd_vel_nav2')]),
             Node(
                 package='nav2_lifecycle_manager',
                 executable='lifecycle_manager',
                 name='lifecycle_manager_navigation',
                 output='screen',
-                arguments=['--ros-args', '--log-level', log_level],
+                arguments=node_arguments,
                 parameters=[{'use_sim_time': use_sim_time},
                             {'autostart': autostart},
                             {'node_names': lifecycle_nodes}]),
@@ -220,7 +240,8 @@ def generate_launch_description():
                 plugin='behavior_server::BehaviorServer',
                 name='behavior_server',
                 parameters=[configured_params],
-                remappings=remappings),
+                # 与非组合分支保持一致，禁止恢复行为直接控制仿真底盘。
+                remappings=remappings + [('cmd_vel', 'cmd_vel_nav2')]),
             ComposableNode(
                 package='nav2_bt_navigator',
                 plugin='nav2_bt_navigator::BtNavigator',
@@ -239,7 +260,8 @@ def generate_launch_description():
                 name='velocity_smoother',
                 parameters=[configured_params],
                 remappings=remappings +
-                           [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]),
+                           [('cmd_vel', 'cmd_vel_nav'),
+                            ('cmd_vel_smoothed', 'cmd_vel_nav2')]),
             ComposableNode(
                 package='nav2_lifecycle_manager',
                 plugin='nav2_lifecycle_manager::LifecycleManager',

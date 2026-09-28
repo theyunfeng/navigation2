@@ -403,8 +403,8 @@ TEST_F(ObstacleLayerTest, testClearDiagonalDistance) {
   for (unsigned int i = 0; i < 8; i++) {
     ASSERT_EQ(obstacle_layer_->getCost(i, i), nav2_costmap_2d::FREE_SPACE);
   }
-  ASSERT_EQ(countValues(*obstacle_layer_, nav2_costmap_2d::FREE_SPACE), 8);
+  ASSERT_EQ(countValues(*obstacle_layer_, nav2_costmap_2d::FREE_SPACE), 8u);
   ASSERT_EQ(
     countValues(*obstacle_layer_, nav2_costmap_2d::LETHAL_OBSTACLE),
-    20 * 20 - 8);
+    20 * 20 - 8u);
 }

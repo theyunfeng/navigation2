@@ -1,0 +1,10 @@
+
+
+<root main_tree_to_execute="MinMainTree">
+  <BehaviorTree ID="MinMainTree">
+    <Sequence name="NavigateToPose">
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <FollowPath path="{path}" controller_id="FollowPath"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

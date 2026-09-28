@@ -27,6 +27,15 @@ from launch_ros.actions import PushRosNamespace
 from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import ReplaceString, RewrittenYaml
 
+# DeclareLaunchArgument   # 声明命令行参数
+# LaunchConfiguration     # 运行时参数占位符
+# Node                    # 启动普通 ROS2 节点
+# ComposableNode          # 可组合节点
+# LoadComposableNodes     # 把组件加载进 container
+# IncludeLaunchDescription # 包含另一个 launch 文件
+# IfCondition             # 条件启动
+# RewrittenYaml           # 启动时改写参数 yaml
+
 
 def generate_launch_description():
     # Get the launch directory
