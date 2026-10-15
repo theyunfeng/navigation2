@@ -118,10 +118,13 @@ private:
   std::string mask_frame_;  // Frame where mask located in
   std::string global_frame_;  // Frame of currnet layer (master_grid)
 
-  unsigned int x_{0};
-  unsigned int y_{0};
-  unsigned int width_{0};
-  unsigned int height_{0};
+  // 上一次已扩展进更新窗口的掩码包围盒（global_frame_ 下，单位 m）。
+  // 新掩码到达时与新掩码包围盒取并集，使被替换/清除的旧掩码区域也得到刷新
+  bool has_applied_bounds_{false};
+  double applied_min_x_{0.0};
+  double applied_min_y_{0.0};
+  double applied_max_x_{0.0};
+  double applied_max_y_{0.0};
   bool has_updated_data_{false};
 };
 

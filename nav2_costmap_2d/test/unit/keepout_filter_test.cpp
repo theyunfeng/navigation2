@@ -30,6 +30,7 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav2_msgs/msg/costmap_filter_info.hpp"
 #include "nav2_costmap_2d/costmap_2d.hpp"
+#include "nav2_costmap_2d/layered_costmap.hpp"
 #include "nav2_costmap_2d/costmap_filters/keepout_filter.hpp"
 
 using namespace std::chrono_literals;
@@ -102,6 +103,7 @@ public:
 
 protected:
   void createMaps(unsigned char master_value, int8_t mask_value, const std::string & mask_frame);
+  void createFarMask(int8_t mask_value, double origin_x, double origin_y);
   void publishMaps();
   void rePublishInfo(double base, double multiplier);
   void rePublishMask();
@@ -111,6 +113,7 @@ protected:
   void verifyMasterGrid(unsigned char free_value, unsigned char keepout_value);
   void testStandardScenario(unsigned char free_value, unsigned char keepout_value);
   void testFramesScenario(unsigned char free_value, unsigned char keepout_value);
+  void testFarMaskScenario();
   void reset();
 
   std::shared_ptr<nav2_costmap_2d::KeepoutFilter> keepout_filter_;
@@ -121,6 +124,8 @@ protected:
 private:
   nav2_util::LifecycleNode::SharedPtr node_;
 
+  // 过滤器保存 LayeredCostmap 裸指针，需与过滤器同生命周期
+  std::unique_ptr<nav2_costmap_2d::LayeredCostmap> layers_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -174,6 +179,33 @@ void TestNode::createMaps(
   mask_->data.resize(width * height, mask_value);
 }
 
+void TestNode::createFarMask(int8_t mask_value, double origin_x, double origin_y)
+{
+  // Small 3x3 mask placed at (origin_x, origin_y), e.g. far from the master costmap origin:
+  //
+  //  map (50x50)              (50,50)
+  //   *------------------------*
+  //   |            mask (43,43)|
+  //   |              *---*     |
+  //   |              |///|     |
+  //   |              *---*     |
+  //   |           (40,40)      |
+  //   *------------------------*
+  // (0,0)
+  const double resolution = 1.0;
+  const unsigned int width = 3;
+  const unsigned int height = 3;
+  mask_ = std::make_shared<nav_msgs::msg::OccupancyGrid>();
+  mask_->info.resolution = resolution;
+  mask_->header.frame_id = "map";
+  mask_->info.width = width;
+  mask_->info.height = height;
+  mask_->info.origin.position.x = origin_x;
+  mask_->info.origin.position.y = origin_y;
+  mask_->info.origin.orientation.w = 1.0;
+  mask_->data.resize(width * height, mask_value);
+}
+
 void TestNode::publishMaps()
 {
   info_publisher_ = std::make_shared<InfoPublisher>(0.0, 1.0);
@@ -213,7 +245,7 @@ void TestNode::createKeepoutFilter(const std::string & global_frame)
   tf_buffer_->setUsingDedicatedThread(true);  // One-thread broadcasting-listening model
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  nav2_costmap_2d::LayeredCostmap layers(global_frame, false, false);
+  layers_ = std::make_unique<nav2_costmap_2d::LayeredCostmap>(global_frame, false, false);
 
   node_->declare_parameter(
     std::string(FILTER_NAME) + ".transform_tolerance", rclcpp::ParameterValue(0.5));
@@ -225,7 +257,9 @@ void TestNode::createKeepoutFilter(const std::string & global_frame)
     rclcpp::Parameter(std::string(FILTER_NAME) + ".filter_info_topic", INFO_TOPIC));
 
   keepout_filter_ = std::make_shared<nav2_costmap_2d::KeepoutFilter>();
-  keepout_filter_->initialize(&layers, std::string(FILTER_NAME), tf_buffer_.get(), node_, nullptr);
+  keepout_filter_->initialize(
+    layers_.get(), std::string(FILTER_NAME),
+    tf_buffer_.get(), node_, nullptr);
   keepout_filter_->initializeFilter(INFO_TOPIC);
 
   // Wait until mask will be received by KeepoutFilter
@@ -325,8 +359,49 @@ void TestNode::testFramesScenario(unsigned char free_value, unsigned char keepou
   verifyMasterGrid(free_value, keepout_value);
 }
 
+void TestNode::testFarMaskScenario()
+{
+  // 使用真实 LayeredCostmap::updateMap()：窗口完全由 KeepoutFilter::updateBounds() 决定
+  layers_->resizeMap(50, 50, 1.0, 0.0, 0.0);
+  layers_->addFilter(keepout_filter_);
+  nav2_costmap_2d::Costmap2D * costmap = layers_->getCostmap();
+
+  // Expect lethal cells only inside the 3x3 cells starting at (lethal_x, lethal_y);
+  // negative coordinates mean the whole costmap should be free
+  auto verify = [costmap](int lethal_x, int lethal_y) {
+      for (int y = 0; y < static_cast<int>(costmap->getSizeInCellsY()); y++) {
+        for (int x = 0; x < static_cast<int>(costmap->getSizeInCellsX()); x++) {
+          const bool in_mask = lethal_x >= 0 && lethal_y >= 0 &&
+            x >= lethal_x && x < lethal_x + 3 && y >= lethal_y && y < lethal_y + 3;
+          EXPECT_EQ(
+            costmap->getCost(x, y),
+            in_mask ? nav2_costmap_2d::LETHAL_OBSTACLE : nav2_costmap_2d::FREE_SPACE) <<
+            "x=" << x << " y=" << y;
+        }
+      }
+    };
+
+  // 1. The far mask at (40,40) received before the first update must be applied by that update
+  layers_->updateMap(0.0, 0.0, 0.0);
+  verify(40, 40);
+
+  // 2. Replace it by an all-free mask at another place (10,10): the next update must
+  //    also refresh the old (40,40) area, so previously lethal cells are cleared
+  createFarMask(nav2_util::OCC_GRID_FREE, 10.0, 10.0);
+  rePublishMask();
+  layers_->updateMap(0.0, 0.0, 0.0);
+  verify(-1, -1);
+
+  // 3. Publish a lethal mask at a new far place (20,30): applied on the next update
+  createFarMask(nav2_util::OCC_GRID_OCCUPIED, 20.0, 30.0);
+  rePublishMask();
+  layers_->updateMap(0.0, 0.0, 0.0);
+  verify(20, 30);
+}
+
 void TestNode::reset()
 {
+  layers_.reset();
   mask_.reset();
   master_grid_.reset();
   info_publisher_.reset();
@@ -459,6 +534,21 @@ TEST_F(TestNode, testDifferentFrames)
 
   // Test KeepoutFilter
   testFramesScenario(nav2_costmap_2d::FREE_SPACE, nav2_costmap_2d::LETHAL_OBSTACLE);
+
+  // Clean-up
+  keepout_filter_->resetFilter();
+  reset();
+}
+
+TEST_F(TestNode, testFarMaskUpdateBounds)
+{
+  // Initialize test system
+  createFarMask(nav2_util::OCC_GRID_OCCUPIED, 40.0, 40.0);
+  publishMaps();
+  createKeepoutFilter("map");
+
+  // Test KeepoutFilter update window for a small mask far from the master origin
+  testFarMaskScenario();
 
   // Clean-up
   keepout_filter_->resetFilter();

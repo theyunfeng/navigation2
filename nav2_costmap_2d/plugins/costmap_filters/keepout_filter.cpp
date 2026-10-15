@@ -38,6 +38,8 @@
 #include <string>
 #include <memory>
 #include <algorithm>
+#include <array>
+#include <limits>
 #include "tf2/convert.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -146,10 +148,8 @@ void KeepoutFilter::maskCallback(
   mask_costmap_ = std::make_unique<Costmap2D>(*msg);
   mask_frame_ = msg->header.frame_id;
 
+  // 更新窗口在 updateBounds() 中按掩码实际世界范围计算（需要 TF），此处只置位
   has_updated_data_ = true;
-  x_ = y_ = 0;
-  width_ = msg->info.width;
-  height_ = msg->info.height;
 }
 
 void KeepoutFilter::updateBounds(
@@ -162,20 +162,75 @@ void KeepoutFilter::updateBounds(
 
   CostmapFilter::updateBounds(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);
 
-  if (!has_updated_data_) {
+  // maskCallback() 与 updateBounds() 运行在不同线程，掩码及标志位统一由该锁保护
+  std::lock_guard<CostmapFilter::mutex_t> guard(*getMutex());
+
+  if (!has_updated_data_ || !mask_costmap_) {
     return;
   }
 
-  double wx, wy;
+  // T_global_mask：将 mask_frame_ 下的点变换到 global_frame_（同帧时为单位变换）
+  tf2::Transform tf2_transform;
+  tf2_transform.setIdentity();
+  if (mask_frame_ != global_frame_) {
+    geometry_msgs::msg::TransformStamped transform;
+    try {
+      transform = tf_->lookupTransform(
+        global_frame_, mask_frame_, tf2::TimePointZero,
+        transform_tolerance_);
+    } catch (tf2::TransformException & ex) {
+      // 保留 has_updated_data_，下个更新周期重试，避免新掩码一直得不到刷新
+      RCLCPP_WARN_THROTTLE(
+        logger_, *(clock_), 2000,
+        "KeepoutFilter: Failed to get mask frame (%s) transformation to costmap frame (%s) "
+        "for update bounds, will retry: %s",
+        mask_frame_.c_str(), global_frame_.c_str(), ex.what());
+      return;
+    }
+    tf2::fromMsg(transform.transform, tf2_transform);
+  }
 
-  layered_costmap_->getCostmap()->mapToWorld(x_, y_, wx, wy);
-  *min_x = std::min(wx, *min_x);
-  *min_y = std::min(wy, *min_y);
+  // 掩码在 mask_frame_ 下为轴对齐矩形（Costmap2D 忽略原点朝向），
+  // 四个角点变换到 global_frame_ 后取轴对齐包围盒
+  const double mask_min_x = mask_costmap_->getOriginX();
+  const double mask_min_y = mask_costmap_->getOriginY();
+  const double mask_max_x =
+    mask_min_x + mask_costmap_->getSizeInCellsX() * mask_costmap_->getResolution();
+  const double mask_max_y =
+    mask_min_y + mask_costmap_->getSizeInCellsY() * mask_costmap_->getResolution();
+  const std::array<tf2::Vector3, 4> corners{
+    tf2::Vector3(mask_min_x, mask_min_y, 0.0), tf2::Vector3(mask_max_x, mask_min_y, 0.0),
+    tf2::Vector3(mask_min_x, mask_max_y, 0.0), tf2::Vector3(mask_max_x, mask_max_y, 0.0)};
 
-  layered_costmap_->getCostmap()->mapToWorld(x_ + width_, y_ + height_, wx, wy);
-  *max_x = std::max(wx, *max_x);
-  *max_y = std::max(wy, *max_y);
+  double new_min_x = std::numeric_limits<double>::max();
+  double new_min_y = std::numeric_limits<double>::max();
+  double new_max_x = std::numeric_limits<double>::lowest();
+  double new_max_y = std::numeric_limits<double>::lowest();
+  for (const tf2::Vector3 & corner : corners) {
+    const tf2::Vector3 point = tf2_transform * corner;
+    new_min_x = std::min(new_min_x, point.x());
+    new_min_y = std::min(new_min_y, point.y());
+    new_max_x = std::max(new_max_x, point.x());
+    new_max_y = std::max(new_max_y, point.y());
+  }
 
+  // 更新窗口 = 新掩码范围 ∪ 上次掩码范围：旧掩码区域被重置后才能清掉残留的禁行代价
+  *min_x = std::min(*min_x, new_min_x);
+  *min_y = std::min(*min_y, new_min_y);
+  *max_x = std::max(*max_x, new_max_x);
+  *max_y = std::max(*max_y, new_max_y);
+  if (has_applied_bounds_) {
+    *min_x = std::min(*min_x, applied_min_x_);
+    *min_y = std::min(*min_y, applied_min_y_);
+    *max_x = std::max(*max_x, applied_max_x_);
+    *max_y = std::max(*max_y, applied_max_y_);
+  }
+
+  applied_min_x_ = new_min_x;
+  applied_min_y_ = new_min_y;
+  applied_max_x_ = new_max_x;
+  applied_max_y_ = new_max_y;
+  has_applied_bounds_ = true;
   has_updated_data_ = false;
 }
 
