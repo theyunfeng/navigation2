@@ -16,6 +16,8 @@
 #include "nav2_lifecycle_manager/lifecycle_manager.hpp"
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,6 +46,8 @@ LifecycleManager::LifecycleManager(const rclcpp::NodeOptions & options)
   declare_parameter("bond_timeout", 4.0);
   declare_parameter("bond_respawn_max_duration", 10.0);
   declare_parameter("attempt_respawn_reconnection", true);
+  declare_parameter("service_timeout", 5.0);
+  declare_parameter("service_retries", 2);
 
   registerRclPreshutdownCallback();
 
@@ -59,6 +63,13 @@ LifecycleManager::LifecycleManager(const rclcpp::NodeOptions & options)
   bond_respawn_max_duration_ = rclcpp::Duration::from_seconds(respawn_timeout_s);
 
   get_parameter("attempt_respawn_reconnection", attempt_respawn_reconnection_);
+
+  double service_timeout_s;
+  get_parameter("service_timeout", service_timeout_s);
+  service_timeout_ = std::chrono::seconds(
+    std::max<int64_t>(1, static_cast<int64_t>(std::ceil(service_timeout_s))));
+  get_parameter("service_retries", service_retries_);
+  service_retries_ = std::max(0, service_retries_);
 
   callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
   manager_srv_ = create_service<ManageLifecycleNodes>(
@@ -213,9 +224,35 @@ LifecycleManager::changeStateForNode(const std::string & node_name, std::uint8_t
 {
   message(transition_label_map_[transition] + node_name);
 
-  if (!node_map_[node_name]->change_state(transition) ||
-    !(node_map_[node_name]->get_state() == transition_state_map_[transition]))
-  {
+  // AGV patch: the upstream call waits for the change_state reply without a timeout; if the reply is
+  // lost (e.g. while DDS discovery is still settling at startup) the manager blocks forever and the
+  // whole stack never activates. Use a bounded call, then verify with get_state: a lost reply after a
+  // completed transition counts as success; otherwise retry a limited number of times.
+  const uint8_t target_state = transition_state_map_[transition];
+  bool reached = false;
+  for (int attempt = 0; attempt <= service_retries_ && !reached; ++attempt) {
+    bool accepted = false;
+    try {
+      accepted = node_map_[node_name]->change_state(transition, service_timeout_);
+    } catch (const std::runtime_error & e) {
+      RCLCPP_WARN(
+        get_logger(), "change_state for %s timed out or failed (attempt %d/%d): %s",
+        node_name.c_str(), attempt + 1, service_retries_ + 1, e.what());
+    }
+    try {
+      reached = node_map_[node_name]->get_state(service_timeout_) == target_state;
+    } catch (const std::runtime_error & e) {
+      RCLCPP_WARN(
+        get_logger(), "get_state for %s failed (attempt %d/%d): %s",
+        node_name.c_str(), attempt + 1, service_retries_ + 1, e.what());
+    }
+    if (!accepted && !reached) {
+      RCLCPP_WARN(
+        get_logger(), "Node %s did not reach the requested state (attempt %d/%d)",
+        node_name.c_str(), attempt + 1, service_retries_ + 1);
+    }
+  }
+  if (!reached) {
     RCLCPP_ERROR(get_logger(), "Failed to change state for node: %s", node_name.c_str());
     return false;
   }

@@ -206,6 +206,10 @@ protected:
   rclcpp::TimerBase::SharedPtr bond_timer_;
   rclcpp::TimerBase::SharedPtr bond_respawn_timer_;
   std::chrono::milliseconds bond_timeout_;
+  // AGV patch: lifecycle service calls must not block forever when a reply is lost
+  // (observed during DDS discovery at startup); see changeStateForNode().
+  std::chrono::seconds service_timeout_{5};
+  int service_retries_{2};
 
   // A map of all nodes to check bond connection
   std::map<std::string, std::shared_ptr<bond::Bond>> bond_map_;
