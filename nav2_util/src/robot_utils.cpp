@@ -171,4 +171,10 @@ bool validateTwist(const geometry_msgs::msg::Twist & msg)
   return true;
 }
 
+// Backported from Jazzy (nav2_collision_monitor backport, agv-humble-custom)
+bool validateTwist(const geometry_msgs::msg::TwistStamped & msg)
+{
+  return validateTwist(msg.twist);
+}
+
 }  // end namespace nav2_util

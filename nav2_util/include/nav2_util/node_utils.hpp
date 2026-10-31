@@ -171,6 +171,14 @@ void copy_all_parameters(const NodeT1 & parent, const NodeT2 & child)
   }
 }
 
+/**
+ * @brief Sets the caller thread to have a soft-realtime prioritization by
+ * increasing the priority level of the host thread.
+ * May throw exception if unable to set prioritization successfully
+ * (Backported from Jazzy for the nav2_collision_monitor backport, agv-humble-custom)
+ */
+void setSoftRealTimePriority();
+
 }  // namespace nav2_util
 
 #endif  // NAV2_UTIL__NODE_UTILS_HPP_

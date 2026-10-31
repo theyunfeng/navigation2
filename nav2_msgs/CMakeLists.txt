@@ -14,6 +14,7 @@ nav2_package()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CollisionMonitorState.msg"
+  "msg/CollisionDetectorState.msg"
   "msg/Costmap.msg"
   "msg/CostmapMetaData.msg"
   "msg/CostmapFilterInfo.msg"
@@ -36,6 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ManageLifecycleNodes.srv"
   "srv/LoadMap.srv"
   "srv/SaveMap.srv"
+  "srv/Toggle.srv"
   "srv/SetInitialPose.srv"
   "srv/SetRouteGraph.srv"
   "action/AssistedTeleop.action"

@@ -13,6 +13,10 @@
 // limitations under the License.
 
 #include "nav2_util/node_utils.hpp"
+#include <sched.h>
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
 #include <chrono>
 #include <string>
 #include <algorithm>
@@ -87,6 +91,20 @@ rclcpp::Node::SharedPtr generate_internal_node(const std::string & prefix)
     .start_parameter_event_publisher(false)
     .arguments({"--ros-args", "-r", "__node:=" + generate_internal_node_name(prefix), "--"});
   return rclcpp::Node::make_shared("_", options);
+}
+
+// Backported from Jazzy (nav2_collision_monitor backport, agv-humble-custom)
+void setSoftRealTimePriority()
+{
+  sched_param sch;
+  sch.sched_priority = 49;
+  if (sched_setscheduler(0, SCHED_FIFO, &sch) == -1) {
+    std::string errmsg(
+      "Cannot set as real-time thread. Users must set: <username> hard rtprio 99 and "
+      "<username> soft rtprio 99 in /etc/security/limits.conf to enable "
+      "realtime prioritization! Error: ");
+    throw std::runtime_error(errmsg + std::strerror(errno));
+  }
 }
 
 }  // namespace nav2_util
