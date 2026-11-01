@@ -56,7 +56,10 @@ CollisionMonitor::on_configure(const rclcpp_lifecycle::State & state)
     this->get_node_base_interface(),
     this->get_node_timers_interface());
   tf_buffer_->setCreateTimerInterface(timer_interface);
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, true);
+  // (agv-humble-custom) The listener is created at the end of a successful configuration, not here: on Humble,
+  // destroying a TransformListener whose dedicated thread has not started spinning yet hangs forever
+  // (executor cancel() before spin() is lost, join() never returns), which happened when a failed configuration
+  // called on_cleanup() right after creating it.
 
   std::string cmd_vel_in_topic;
   std::string cmd_vel_out_topic;
@@ -105,6 +108,7 @@ CollisionMonitor::on_configure(const rclcpp_lifecycle::State & state)
     }
   }
 
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, true);
   return nav2_util::CallbackReturn::SUCCESS;
 }
 

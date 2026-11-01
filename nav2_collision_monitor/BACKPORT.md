@@ -20,11 +20,16 @@
   default empty; an empty polygon disables it). In `process()` the points of every source that lie inside it are dropped
   before the polygons are checked: the robot body or its carried load seen by the sensors (the AGV navigation publishes
   the body / loaded footprint). Default behaviour is unchanged when neither parameter is set. Covered by
-  `agv_nav/test/test_collision_monitor_host.cpp` (ExcludesPointsInsideFootprint). With the patch: run directly
-  collision_monitor_node_test 5/5 passed (20 tests); under `colcon test` it times out intermittently (hangs in
-  "Cleaning up" after a failed configure, e.g. testPolygonsNotSet). The same happens without the patch (2026-11-01:
-  baseline 2 of 4 `colcon test` runs timed out), so it is pre-existing, not caused by the patch. A timed-out run can
-  leave the test binary orphaned (ctest only kills the run_test.py wrapper); kill it before rerunning, otherwise the
-  next run collides with it over DDS.
+  `agv_nav/test/test_collision_monitor_host.cpp` (ExcludesPointsInsideFootprint).
+- Local fix (agv-humble-custom, 2026-11-02): `on_configure` of `CollisionMonitor` and `CollisionDetector` creates the
+  `tf2_ros::TransformListener` at the end of a successful configuration instead of at the start. On Humble, destroying a TransformListener whose dedicated thread
+  has not started spinning yet hangs forever (`executor->cancel()` before `spin()` is lost and `join()` never returns);
+  a failed configuration called `on_cleanup()` right after creating it. Symptom: collision_monitor_node_test timed out
+  under `colcon test` (hung in "Cleaning up" after a failed configure, e.g. testPolygonsNotSet): 2 of 4 runs without the
+  exclusion patch, so it was pre-existing. After the monitor fix, collision_monitor_node_test and the agv_nav host test
+  (which hung the same way) passed 10 of 10 `colcon test` runs, but collision_detector_node_test still timed out once
+  in 10. After the same fix in the detector, collision_monitor_node_test and collision_detector_node_test passed 10 of 10
+  further runs. A timed-out run can leave the test binary orphaned (ctest only kills the run_test.py
+  wrapper); kill it before rerunning, otherwise the next run collides with it over DDS.
 - Updating: re-copy the package from `upstream/jazzy` and re-apply the adaptation and the local patch above; do not merge
   it from `upstream/humble`.

@@ -50,7 +50,7 @@ CollisionDetector::on_configure(const rclcpp_lifecycle::State & state)
     this->get_node_base_interface(),
     this->get_node_timers_interface());
   tf_buffer_->setCreateTimerInterface(timer_interface);
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, true);
+  // (agv-humble-custom) Listener created at the end of a successful configuration, see collision_monitor_node.cpp
 
   state_pub_ = this->create_publisher<nav2_msgs::msg::CollisionDetectorState>(
     "collision_detector_state", rclcpp::SystemDefaultsQoS());
@@ -64,6 +64,7 @@ CollisionDetector::on_configure(const rclcpp_lifecycle::State & state)
     return nav2_util::CallbackReturn::FAILURE;
   }
 
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, true);
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
