@@ -18,12 +18,14 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "geometry_msgs/msg/polygon_stamped.hpp"
 
 #include "tf2/time.h"
 #include "tf2_ros/buffer.h"
@@ -202,6 +204,20 @@ protected:
   void publishPolygons() const;
 
   /**
+   * @brief (agv-humble-custom) Exclusion polygon callback: replaces the exclusion polygon.
+   * The polygon must be given in base_frame_id; an empty polygon disables the exclusion.
+   * @param msg Exclusion polygon
+   */
+  void exclusionPolygonCallback(geometry_msgs::msg::PolygonStamped::ConstSharedPtr msg);
+
+  /**
+   * @brief (agv-humble-custom) Removes the points lying inside the exclusion polygon
+   * (robot body / carried load seen by the sensors)
+   * @param points Collision points in base_frame_id, filtered in place
+   */
+  void removeExcludedPoints(std::vector<Point> & points);
+
+  /**
    * @brief Enable/disable collision monitor service callback
    * @param request Service request
    * @param response Service response
@@ -253,6 +269,15 @@ protected:
   rclcpp::Time stop_stamp_;
   /// @brief Timeout after which 0-velocity ceases to be published
   rclcpp::Duration stop_pub_timeout_;
+
+  /// @brief (agv-humble-custom) Base frame of the collision points (exclusion polygon frame)
+  std::string base_frame_id_;
+  /// @brief (agv-humble-custom) Exclusion polygon in base_frame_id; empty: no exclusion
+  std::vector<Point> exclusion_polygon_;
+  /// @brief (agv-humble-custom) Guards exclusion_polygon_ (subscription vs. cmd_vel_in callback)
+  std::mutex exclusion_mutex_;
+  /// @brief (agv-humble-custom) Exclusion polygon subscriber (exclusion_polygon_topic)
+  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr exclusion_polygon_sub_;
 };  // class CollisionMonitor
 
 }  // namespace nav2_collision_monitor

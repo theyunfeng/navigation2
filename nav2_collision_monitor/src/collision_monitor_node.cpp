@@ -14,12 +14,14 @@
 
 #include "nav2_collision_monitor/collision_monitor_node.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <utility>
 #include <functional>
 
 #include "tf2_ros/create_timer_ros.h"
 
+#include "nav2_util/array_parser.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "nav2_util/robot_utils.hpp"
 
@@ -174,6 +176,11 @@ CollisionMonitor::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   cmd_vel_out_pub_.reset();
   state_pub_.reset();
   collision_points_marker_pub_.reset();
+  exclusion_polygon_sub_.reset();
+  {
+    std::lock_guard<std::mutex> lock(exclusion_mutex_);
+    exclusion_polygon_.clear();
+  }
 
   polygons_.clear();
   sources_.clear();
@@ -258,6 +265,7 @@ bool CollisionMonitor::getParameters(
   nav2_util::declare_parameter_if_not_declared(
     node, "base_frame_id", rclcpp::ParameterValue("base_footprint"));
   base_frame_id = get_parameter("base_frame_id").as_string();
+  base_frame_id_ = base_frame_id;
   nav2_util::declare_parameter_if_not_declared(
     node, "odom_frame_id", rclcpp::ParameterValue("odom"));
   odom_frame_id = get_parameter("odom_frame_id").as_string();
@@ -278,6 +286,45 @@ bool CollisionMonitor::getParameters(
     node, "stop_pub_timeout", rclcpp::ParameterValue(1.0));
   stop_pub_timeout_ =
     rclcpp::Duration::from_seconds(get_parameter("stop_pub_timeout").as_double());
+
+  // (agv-humble-custom) Exclusion polygon: points of every source lying inside it are dropped before the polygons
+  // are checked (the robot body or its carried load seen by the sensors). Static value in base_frame_id, optionally
+  // replaced at runtime from exclusion_polygon_topic (PolygonStamped in base_frame_id, transient_local).
+  nav2_util::declare_parameter_if_not_declared(
+    node, "exclusion_polygon", rclcpp::ParameterValue(std::string("")));
+  std::string exclusion_string = get_parameter("exclusion_polygon").as_string();
+  nav2_util::declare_parameter_if_not_declared(
+    node, "exclusion_polygon_topic", rclcpp::ParameterValue(std::string("")));
+  const std::string exclusion_topic = get_parameter("exclusion_polygon_topic").as_string();
+  {
+    std::lock_guard<std::mutex> lock(exclusion_mutex_);
+    exclusion_polygon_.clear();
+    if (!exclusion_string.empty()) {
+      std::string error;
+      const std::vector<std::vector<float>> vvf = nav2_util::parseVVF(exclusion_string, error);
+      if (!error.empty() || vvf.size() < 3) {
+        RCLCPP_ERROR(
+          get_logger(), "exclusion_polygon '%s' is invalid (need >= 3 points): %s",
+          exclusion_string.c_str(), error.c_str());
+        return false;
+      }
+      for (const auto & pair : vvf) {
+        if (pair.size() != 2) {
+          RCLCPP_ERROR(get_logger(), "exclusion_polygon points must be pairs of numbers");
+          return false;
+        }
+        exclusion_polygon_.push_back(Point{pair[0], pair[1]});
+      }
+    }
+  }
+  if (!exclusion_topic.empty()) {
+    exclusion_polygon_sub_ = create_subscription<geometry_msgs::msg::PolygonStamped>(
+      exclusion_topic, rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+      std::bind(&CollisionMonitor::exclusionPolygonCallback, this, std::placeholders::_1));
+  }
+  RCLCPP_INFO(
+    get_logger(), "Exclusion polygon: %zu points, topic '%s'", exclusion_polygon_.size(),
+    exclusion_topic.c_str());
 
   if (
     !configureSources(
@@ -446,6 +493,7 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in, const std_msgs::msg:
         robot_action.req_vel.tw = 0.0;
         break;
       }
+      removeExcludedPoints(iter.first->second);
     }
 
     if (collision_points_marker_pub_->get_subscription_count() > 0) {
@@ -655,6 +703,54 @@ void CollisionMonitor::notifyActionState(
 
     state_pub_->publish(std::move(state_msg));
   }
+}
+
+void CollisionMonitor::exclusionPolygonCallback(
+  geometry_msgs::msg::PolygonStamped::ConstSharedPtr msg)
+{
+  if (msg->header.frame_id != base_frame_id_) {
+    RCLCPP_WARN(
+      get_logger(), "Exclusion polygon ignored: frame '%s' is not base_frame_id '%s'",
+      msg->header.frame_id.c_str(), base_frame_id_.c_str());
+    return;
+  }
+  std::vector<Point> polygon;
+  for (const auto & point : msg->polygon.points) {
+    polygon.push_back(Point{point.x, point.y});
+  }
+  if (!polygon.empty() && polygon.size() < 3) {
+    RCLCPP_WARN(
+      get_logger(), "Exclusion polygon ignored: %zu points (need 0 or >= 3)",
+      polygon.size());
+    return;
+  }
+  std::lock_guard<std::mutex> lock(exclusion_mutex_);
+  exclusion_polygon_ = std::move(polygon);
+}
+
+void CollisionMonitor::removeExcludedPoints(std::vector<Point> & points)
+{
+  std::lock_guard<std::mutex> lock(exclusion_mutex_);
+  const std::vector<Point> & poly = exclusion_polygon_;
+  if (poly.size() < 3) {
+    return;
+  }
+  // Ray crossing test, same as Polygon::isPointInside()
+  const auto inside = [&poly](const Point & point) {
+      bool res = false;
+      std::size_t i = poly.size() - 1;
+      for (std::size_t j = 0; j < poly.size(); i = j++) {
+        if ((point.y <= poly[i].y) == (point.y > poly[j].y)) {
+          const double x_inter = poly[i].x +
+            (point.y - poly[i].y) * (poly[j].x - poly[i].x) / (poly[j].y - poly[i].y);
+          if (x_inter > point.x) {
+            res = !res;
+          }
+        }
+      }
+      return res;
+    };
+  points.erase(std::remove_if(points.begin(), points.end(), inside), points.end());
 }
 
 void CollisionMonitor::publishPolygons() const
