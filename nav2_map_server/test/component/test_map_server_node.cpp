@@ -216,22 +216,32 @@ TEST_F(MapServerTestFixture, NoInitialMap)
   // only configure node, to test behaviour of service while node is not active
   lifecycle_client_->change_state(Transition::TRANSITION_CONFIGURE, 3s);
 
+  // AGV 修改：INACTIVE 时 LoadMap 照常载入（不发布），激活后 /map 发布的是该次请求的地图
   RCLCPP_INFO(node_->get_logger(), "Testing LoadMap service while not being active");
   auto load_map_req = std::make_shared<nav2_msgs::srv::LoadMap::Request>();
   auto load_map_cl = node_->create_client<nav2_msgs::srv::LoadMap>("/map_server/load_map");
 
   ASSERT_TRUE(load_map_cl->wait_for_service(3s));
+  load_map_req->map_url = path(TEST_DIR) / path(g_valid_yaml_file);
   auto resp = send_request<nav2_msgs::srv::LoadMap>(node_, load_map_cl, load_map_req);
 
-  ASSERT_EQ(resp->result, nav2_msgs::srv::LoadMap::Response::RESULT_UNDEFINED_FAILURE);
+  ASSERT_EQ(resp->result, nav2_msgs::srv::LoadMap::Response::RESULT_SUCCESS);
+  verifyMapMsg(resp->map);
 
-  // activate server and load map:
+  nav_msgs::msg::OccupancyGrid::SharedPtr published;
+  auto sub = node_->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    "map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    [&published](nav_msgs::msg::OccupancyGrid::SharedPtr msg) {published = msg;});
+
+  // activate server: the map loaded while inactive is published
   lifecycle_client_->change_state(Transition::TRANSITION_ACTIVATE, 3s);
   RCLCPP_INFO(node_->get_logger(), "active again");
 
-  load_map_req->map_url = path(TEST_DIR) / path(g_valid_yaml_file);
-  auto load_res = send_request<nav2_msgs::srv::LoadMap>(node_, load_map_cl, load_map_req);
-
-  ASSERT_EQ(load_res->result, nav2_msgs::srv::LoadMap::Response::RESULT_SUCCESS);
-  verifyMapMsg(load_res->map);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!published && std::chrono::steady_clock::now() < deadline) {
+    rclcpp::spin_some(node_);
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_NE(published, nullptr);
+  verifyMapMsg(*published);
 }

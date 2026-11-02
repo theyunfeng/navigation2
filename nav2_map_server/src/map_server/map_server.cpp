@@ -198,17 +198,21 @@ void MapServer::loadMapCallback(
   const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
   std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response)
 {
-  // if not in ACTIVE state, ignore request
-  if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+  // AGV 修改：服务在 configure 之后就存在，整车 cartographer_manager 一见到服务就发 LoadMap，可能早于 activate。
+  // 上游此时直接拒绝，/map 会停在启动参数里的缺省地图；这里在 INACTIVE 时照常载入，只是不发布，
+  // 由 on_activate 发布 msg_（即本次请求的地图）。其余状态（如正在切换中）仍拒绝。
+  const uint8_t state_id = get_current_state().id();
+  const bool active = state_id == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE;
+  if (!active && state_id != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
     RCLCPP_WARN(
       get_logger(),
-      "Received LoadMap request but not in ACTIVE state, ignoring!");
+      "Received LoadMap request but not in ACTIVE or INACTIVE state, ignoring!");
     response->result = response->RESULT_UNDEFINED_FAILURE;
     return;
   }
-  RCLCPP_INFO(get_logger(), "Handling LoadMap request");
+  RCLCPP_INFO(get_logger(), "Handling LoadMap request%s", active ? "" : " (inactive, publish on activate)");
   // Load from file
-  if (loadMapResponseFromYaml(request->map_url, response)) {
+  if (loadMapResponseFromYaml(request->map_url, response) && active) {
     auto occ_grid = std::make_unique<nav_msgs::msg::OccupancyGrid>(msg_);
     occ_pub_->publish(std::move(occ_grid));  // publish new map
   }
