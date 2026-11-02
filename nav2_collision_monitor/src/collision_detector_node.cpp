@@ -14,6 +14,9 @@
 // limitations under the License.
 
 #include "nav2_collision_monitor/collision_detector_node.hpp"
+#ifdef NAV2_COLLISION_MONITOR_HAS_POLYGON_SOURCE  // (agv-humble-custom) see CMakeLists.txt
+#include "nav2_collision_monitor/polygon_source.hpp"
+#endif
 
 #include <exception>
 #include <utility>
@@ -291,6 +294,7 @@ bool CollisionDetector::configureSources(
         r->configure();
 
         sources_.push_back(r);
+#ifdef NAV2_COLLISION_MONITOR_HAS_POLYGON_SOURCE
       } else if (source_type == "polygon") {
         std::shared_ptr<PolygonSource> ps = std::make_shared<PolygonSource>(
           node, source_name, tf_buffer_, base_frame_id, odom_frame_id,
@@ -298,6 +302,7 @@ bool CollisionDetector::configureSources(
         ps->configure();
 
         sources_.push_back(ps);
+#endif
       } else {  // Error if something else
         RCLCPP_ERROR(
           get_logger(),

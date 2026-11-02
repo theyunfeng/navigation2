@@ -22,6 +22,19 @@ find_package(visualization_msgs REQUIRED)
 
 nav2_package()
 
+# (agv-humble-custom) geometry_msgs/PolygonInstanceStamped is not in every Humble geometry_msgs build (the RK3588
+# vehicle image ships 4.9.1 without it): without it the "polygon" observation source is not built and configuring
+# such a source fails as an unknown source type. Scan / pointcloud / range sources are unaffected.
+find_path(NAV2_CM_POLYGON_INSTANCE_INCLUDE geometry_msgs/msg/polygon_instance_stamped.hpp
+  PATHS ${geometry_msgs_INCLUDE_DIRS} NO_DEFAULT_PATH)
+if(NAV2_CM_POLYGON_INSTANCE_INCLUDE)
+  set(polygon_source_sources src/polygon_source.cpp)
+  add_compile_definitions(NAV2_COLLISION_MONITOR_HAS_POLYGON_SOURCE)
+else()
+  set(polygon_source_sources "")
+  message(WARNING "geometry_msgs/PolygonInstanceStamped not found: polygon observation source disabled")
+endif()
+
 ### Libraries and executables ###
 
 include_directories(
@@ -56,7 +69,7 @@ add_library(${monitor_library_name} SHARED
   src/source.cpp
   src/scan.cpp
   src/pointcloud.cpp
-  src/polygon_source.cpp
+  ${polygon_source_sources}
   src/range.cpp
   src/kinematics.cpp
 )
@@ -68,7 +81,7 @@ add_library(${detector_library_name} SHARED
   src/source.cpp
   src/scan.cpp
   src/pointcloud.cpp
-  src/polygon_source.cpp
+  ${polygon_source_sources}
   src/range.cpp
   src/kinematics.cpp
 )

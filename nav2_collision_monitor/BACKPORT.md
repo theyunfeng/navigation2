@@ -10,6 +10,12 @@
   - `nav2_msgs`: `msg/CollisionDetectorState.msg`, `srv/Toggle.srv`.
 - Humble adaptation inside this package: `collision_detector_node.cpp` uses `rclcpp::create_timer(...)` (Humble
   `rclcpp_lifecycle::LifecycleNode` has no `create_timer`).
+- Humble adaptation (2026-11-02): `geometry_msgs/PolygonInstanceStamped` is missing from some Humble geometry_msgs builds
+  (the RK3588 vehicle image ships ros-humble-geometry-msgs 4.9.1 without it; the PC has 4.9.0 with it). CMake checks for
+  the header; without it `polygon_source.cpp` is not built (`NAV2_COLLISION_MONITOR_HAS_POLYGON_SOURCE` undefined, a
+  `type: polygon` observation source then fails configuration as an unknown source type) and the three tests that use the
+  message (sources_test, collision_monitor_node_test, collision_detector_node_test) are skipped. The node headers no longer
+  include `polygon_source.hpp` (the node sources do, under the macro). Scan / pointcloud / range sources are unaffected.
 - Tests on Humble (2026-10-31, x86_64): collision_monitor_node 20/20, collision_detector_node 14/14, polygons 27/27,
   velocity_polygons 7/7, sources 6/6, kinematics 2/2. uncrustify reports a style diff in `src/pointcloud.cpp` (Humble vs Jazzy
   uncrustify configuration; upstream file left unchanged). One full `colcon test` run had collision_monitor_node_test produce no

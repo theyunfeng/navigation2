@@ -32,6 +32,7 @@
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
+#include "geometry_msgs/msg/polygon_instance_stamped.hpp"  // (agv-humble-custom) was transitive
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include "tf2_ros/transform_broadcaster.h"
